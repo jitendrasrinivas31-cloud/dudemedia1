@@ -1,0 +1,73 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function owner(uid) { return signedIn() && request.auth.uid == uid; }
+    function boundedText(data, key, minLen, maxLen) { return data[key] is string && data[key].size() >= minLen && data[key].size() <= maxLen; }
+    function validProfile(data, uid) {
+      return data.keys().hasOnly(['uid','displayName','handle','bio','avatarUrl','createdAt'])
+        && data.keys().hasAll(['uid','displayName','handle','bio','avatarUrl','createdAt'])
+        && data.uid == uid
+        && boundedText(data, 'displayName', 1, 60)
+        && boundedText(data, 'handle', 1, 24)
+        && boundedText(data, 'bio', 0, 240)
+        && data.avatarUrl is string && data.avatarUrl.size() <= 2048
+        && data.createdAt is timestamp;
+    }
+    function validPost(data) {
+      return data.keys().hasOnly(['authorUid','authorName','handle','authorColor','caption','kind','mediaUrl','storagePath','published','likeCount','commentCount','createdAt'])
+        && data.keys().hasAll(['authorUid','authorName','handle','caption','kind','mediaUrl','storagePath','published','likeCount','commentCount','createdAt'])
+        && data.authorUid == request.auth.uid
+        && boundedText(data, 'authorName', 1, 60)
+        && boundedText(data, 'handle', 1, 24)
+        && (!('authorColor' in data) || (data.authorColor is string && data.authorColor.size() <= 40))
+        && boundedText(data, 'caption', 1, 1200)
+        && data.kind in ['photo','video']
+        && data.mediaUrl is string && data.mediaUrl.size() <= 2048
+        && data.storagePath is string && data.storagePath.size() <= 300
+        && data.published is bool
+        && data.likeCount is int && data.likeCount == 0
+        && data.commentCount is int && data.commentCount == 0
+        && data.createdAt == request.time;
+    }
+    function validComment(data) {
+      return data.keys().hasOnly(['uid','displayName','text','createdAt'])
+        && data.keys().hasAll(['uid','displayName','text','createdAt'])
+        && data.uid == request.auth.uid
+        && boundedText(data, 'displayName', 1, 60)
+        && boundedText(data, 'text', 1, 500)
+        && data.createdAt == request.time;
+    }
+    match /profiles/{uid} {
+      allow read: if signedIn();
+      allow create: if owner(uid) && validProfile(request.resource.data, uid) && request.resource.data.createdAt == request.time;
+      allow update: if owner(uid) && validProfile(request.resource.data, uid) && request.resource.data.uid == resource.data.uid && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if owner(uid);
+    }
+    match /posts/{postId} {
+      allow get, list: if signedIn() && resource.data.published == true;
+      allow create: if signedIn() && validPost(request.resource.data);
+      allow update: if signedIn() && resource.data.authorUid == request.auth.uid && validPost(request.resource.data) && request.resource.data.authorUid == resource.data.authorUid && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if signedIn() && resource.data.authorUid == request.auth.uid;
+      match /likes/{uid} {
+        allow read: if signedIn();
+        allow create: if owner(uid) && request.resource.data.keys().hasOnly(['uid','createdAt']) && request.resource.data.keys().hasAll(['uid','createdAt']) && request.resource.data.uid == uid && request.resource.data.createdAt == request.time;
+        allow update: if false;
+        allow delete: if owner(uid);
+      }
+      match /comments/{commentId} {
+        allow read: if signedIn();
+        allow create: if signedIn() && validComment(request.resource.data);
+        allow update: if false;
+        allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+      }
+    }
+    match /users/{uid}/{subcollection}/{itemId} {
+      allow read: if owner(uid);
+      allow create: if owner(uid) && request.resource.data.keys().hasOnly(['postId','handle','createdAt']) && request.resource.data.createdAt == request.time;
+      allow update: if false;
+      allow delete: if owner(uid);
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}
